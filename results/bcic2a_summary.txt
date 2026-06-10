@@ -1,0 +1,36 @@
+HHAT-Net Results on BCIC-IV-2a
+=====================================
+
+Architecture:
+- True 5-band EEG decomposition
+  (Theta, Mu, Low-Beta, High-Beta, Gamma)
+- Multi-Band CNN
+- Spatial CNN
+- Grouped SE Attention
+- Temporal Multi-Scale Attention (TMSA)
+- Grouped Query Attention (GQA)
+- Rotary Positional Embedding (RoPE)
+- Feature Fusion Layer
+- Compact Temporal Convolution Network (TCN)
+- Embedding Layer
+- Softmax Classification
+
+Training Configuration:
+- Dataset: BCIC-IV-2a
+- Subjects: A01–A09
+- Number of Classes: 4
+- Epochs: 100
+- Batch Size: 32
+- Optimizer: AdamW
+- Learning Rate: 0.001
+- GPU: Tesla T4 (Kaggle)
+
+Average Performance:
+Accuracy  : 65.90%
+Kappa     : 0.5450
+Precision : 68.47%
+Recall    : 65.91%
+F1-score  : 65.36%
+
+Remarks:
+The proposed HHAT-Net integrates multiband EEG processing with TMSA, GQA, RoPE, feature fusion, and TCN modules for motor imagery EEG classification on the BCIC-IV-2a dataset.
