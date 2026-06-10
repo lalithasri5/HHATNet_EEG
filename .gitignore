@@ -1,0 +1,18 @@
+# Virtual environment
+hhat_env/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Results
+results/
+*.pth
+*.pt
+
+# VS Code settings
+.vscode/
