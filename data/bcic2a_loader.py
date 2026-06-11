@@ -16,13 +16,15 @@ BANDS = {
 }
 
 
-def make_multiband_epochs(raw, events, event_id):
-    band_data = []
+def extract_band_epochs(raw, events, event_id, tmin=0.5, tmax=4.5):
+    band_epochs = []
 
     for band_name, (low, high) in BANDS.items():
-        raw_band = raw.copy().filter(
-            low,
-            high,
+        raw_band = raw.copy()
+
+        raw_band.filter(
+            l_freq=low,
+            h_freq=high,
             fir_design="firwin",
             verbose=False
         )
@@ -31,17 +33,16 @@ def make_multiband_epochs(raw, events, event_id):
             raw_band,
             events,
             event_id=event_id,
-            tmin=0.5,
-            tmax=4.5,
+            tmin=tmin,
+            tmax=tmax,
             baseline=None,
             preload=True,
             verbose=False
         )
 
-        band_data.append(epochs.get_data())
+        band_epochs.append(epochs.get_data())
 
-    X = np.stack(band_data, axis=1)
-
+    X = np.stack(band_epochs, axis=1)
     y = epochs.events[:, -1]
 
     return X, y
@@ -50,7 +51,11 @@ def make_multiband_epochs(raw, events, event_id):
 def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
     file_path = os.path.join(data_path, f"A{subject:02d}T.gdf")
 
-    raw = mne.io.read_raw_gdf(file_path, preload=True, verbose=False)
+    raw = mne.io.read_raw_gdf(
+        file_path,
+        preload=True,
+        verbose=False
+    )
 
     raw = raw.drop_channels([
         "EOG-left",
@@ -58,7 +63,13 @@ def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
         "EOG-right"
     ])
 
-    events, event_dict = mne.events_from_annotations(raw, verbose=False)
+    # Optional EEG reference
+    raw.set_eeg_reference("average", verbose=False)
+
+    events, event_dict = mne.events_from_annotations(
+        raw,
+        verbose=False
+    )
 
     event_id = {
         "left_hand": event_dict["769"],
@@ -67,7 +78,13 @@ def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
         "tongue": event_dict["772"]
     }
 
-    X, y = make_multiband_epochs(raw, events, event_id)
+    X, y = extract_band_epochs(
+        raw,
+        events,
+        event_id,
+        tmin=0.5,
+        tmax=4.5
+    )
 
     label_map = {
         event_dict["769"]: 0,
@@ -78,10 +95,6 @@ def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
 
     y = np.array([label_map[label] for label in y])
 
-    mean = X.mean(axis=(0, 3), keepdims=True)
-    std = X.std(axis=(0, 3), keepdims=True) + 1e-6
-    X = (X - mean) / std
-
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -89,6 +102,13 @@ def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
         random_state=42,
         stratify=y
     )
+
+    # Normalize using training data only
+    mean = X_train.mean(axis=(0, 3), keepdims=True)
+    std = X_train.std(axis=(0, 3), keepdims=True) + 1e-6
+
+    X_train = (X_train - mean) / std
+    X_test = (X_test - mean) / std
 
     X_train = torch.tensor(X_train, dtype=torch.float32)
     X_test = torch.tensor(X_test, dtype=torch.float32)
