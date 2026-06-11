@@ -19,7 +19,7 @@ BANDS = {
 def extract_band_epochs(raw, events, event_id, tmin=0.5, tmax=4.5):
     band_epochs = []
 
-    for band_name, (low, high) in BANDS.items():
+    for _, (low, high) in BANDS.items():
         raw_band = raw.copy()
 
         raw_band.filter(
@@ -51,11 +51,7 @@ def extract_band_epochs(raw, events, event_id, tmin=0.5, tmax=4.5):
 def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
     file_path = os.path.join(data_path, f"A{subject:02d}T.gdf")
 
-    raw = mne.io.read_raw_gdf(
-        file_path,
-        preload=True,
-        verbose=False
-    )
+    raw = mne.io.read_raw_gdf(file_path, preload=True, verbose=False)
 
     raw = raw.drop_channels([
         "EOG-left",
@@ -63,13 +59,15 @@ def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
         "EOG-right"
     ])
 
-    # Optional EEG reference
+    # improved preprocessing
     raw.set_eeg_reference("average", verbose=False)
 
-    events, event_dict = mne.events_from_annotations(
-        raw,
+    raw.notch_filter(
+        freqs=50,
         verbose=False
     )
+
+    events, event_dict = mne.events_from_annotations(raw, verbose=False)
 
     event_id = {
         "left_hand": event_dict["769"],
@@ -103,7 +101,7 @@ def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
         stratify=y
     )
 
-    # Normalize using training data only
+    # normalize using train data only
     mean = X_train.mean(axis=(0, 3), keepdims=True)
     std = X_train.std(axis=(0, 3), keepdims=True) + 1e-6
 
