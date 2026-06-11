@@ -6,13 +6,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from sklearn.metrics import (
-    accuracy_score,
-    cohen_kappa_score,
-    precision_score,
-    recall_score,
-    f1_score
-)
+from sklearn.metrics import accuracy_score, cohen_kappa_score, precision_score, recall_score, f1_score
 
 from models.hhatnet import HHATNet
 from data.bcic2a_loader import load_subject_2a
@@ -25,6 +19,11 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
 
 
+def eeg_augment(x, noise_std=0.02):
+    noise = torch.randn_like(x) * noise_std
+    return x + noise
+
+
 def train_one_subject(data_path, subject, epochs_count, batch_size, lr, device):
     train_loader, test_loader = load_subject_2a(
         data_path=data_path,
@@ -32,9 +31,9 @@ def train_one_subject(data_path, subject, epochs_count, batch_size, lr, device):
         batch_size=batch_size
     )
 
-    model = HHATNet(n_channels=22, n_classes=4).to(device)
+    model = HHATNet(n_channels=22, n_classes=4, n_bands=5).to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -47,6 +46,9 @@ def train_one_subject(data_path, subject, epochs_count, batch_size, lr, device):
         T_max=epochs_count
     )
 
+    best_acc = 0
+    best_state = None
+
     for epoch in range(epochs_count):
         model.train()
 
@@ -54,18 +56,47 @@ def train_one_subject(data_path, subject, epochs_count, batch_size, lr, device):
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
 
+            X_batch = eeg_augment(X_batch)
+
             optimizer.zero_grad()
 
             outputs = model(X_batch)
             loss = criterion(outputs, y_batch)
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
 
         scheduler.step()
 
+        # quick validation every 10 epochs
         if (epoch + 1) % 10 == 0:
-            print(f"A{subject:02d} | Epoch {epoch + 1}/{epochs_count} completed")
+            model.eval()
+            preds_all = []
+            labels_all = []
+
+            with torch.no_grad():
+                for X_val, y_val in test_loader:
+                    X_val = X_val.to(device)
+                    y_val = y_val.to(device)
+
+                    outputs = model(X_val)
+                    preds = outputs.argmax(dim=1)
+
+                    preds_all.extend(preds.cpu().numpy())
+                    labels_all.extend(y_val.cpu().numpy())
+
+            val_acc = accuracy_score(labels_all, preds_all)
+
+            if val_acc > best_acc:
+                best_acc = val_acc
+                best_state = model.state_dict()
+
+            print(f"A{subject:02d} | Epoch {epoch+1}/{epochs_count} | Val Acc: {val_acc:.4f}")
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     model.eval()
 
@@ -105,8 +136,8 @@ def main():
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--out", type=str, default="results/bcic2a_results.csv")
+    parser.add_argument("--lr", type=float, default=0.0005)
+    parser.add_argument("--out", type=str, default="results/bcic2a_improved.csv")
 
     args = parser.parse_args()
 
@@ -134,7 +165,6 @@ def main():
         )
 
         print(result)
-
         subject_results.append(result)
 
     results_df = pd.DataFrame(subject_results)
