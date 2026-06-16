@@ -6,15 +6,9 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from torch.utils.data import TensorDataset, DataLoader, WeightedRandomSampler
+from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import GroupShuffleSplit
-from sklearn.metrics import (
-    accuracy_score,
-    cohen_kappa_score,
-    precision_score,
-    recall_score,
-    f1_score
-)
+from sklearn.metrics import accuracy_score, cohen_kappa_score, precision_score, recall_score, f1_score
 
 from data.stft_loader import preprocess_gdf_folder
 from models.stft_hhatnet import STFTHHATNet
@@ -23,67 +17,54 @@ from models.stft_hhatnet import STFTHHATNet
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
-
     torch.manual_seed(seed)
-
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
 
-def main():
+def evaluate(model, loader, device):
+    model.eval()
 
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for X_batch, y_batch in loader:
+            X_batch = X_batch.to(device)
+            outputs = model(X_batch)
+            preds = outputs.argmax(dim=1)
+
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(y_batch.numpy())
+
+    acc = accuracy_score(all_labels, all_preds)
+
+    return acc, all_preds, all_labels
+
+
+def main():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "--data_path",
-        type=str,
-        required=True
-    )
-
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=150
-    )
-
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=64
-    )
-
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=0.0005
-    )
-
-    parser.add_argument(
-        "--out",
-        type=str,
-        default="results/stft_hhat_leakage_free.csv"
-    )
+    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--out", type=str, default="results/stft_hhat_leakage_free_fixed.csv")
 
     args = parser.parse_args()
 
     set_seed(42)
 
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
-
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
     os.makedirs("results", exist_ok=True)
 
-    X, y, subject_ids, trial_ids = preprocess_gdf_folder(
-        args.data_path
-    )
+    X, y, subject_ids, trial_ids = preprocess_gdf_folder(args.data_path)
 
-    print("Preprocessing complete")
     print("Total samples:", X.shape)
-    print("Total labels:", y.shape)
     print("Total unique trials:", len(np.unique(trial_ids)))
+    print("Class distribution:", np.bincount(y))
 
     splitter = GroupShuffleSplit(
         n_splits=1,
@@ -91,102 +72,50 @@ def main():
         random_state=42
     )
 
-    train_idx, test_idx = next(
-        splitter.split(
-            X,
-            y,
-            groups=trial_ids
-        )
-    )
+    train_idx, test_idx = next(splitter.split(X, y, groups=trial_ids))
 
     X_train = X[train_idx]
     X_test = X[test_idx]
-
     y_train = y[train_idx]
     y_test = y[test_idx]
 
-    train_trial_ids = trial_ids[train_idx]
-    test_trial_ids = trial_ids[test_idx]
+    train_trials = trial_ids[train_idx]
+    test_trials = trial_ids[test_idx]
 
     print("Train samples:", X_train.shape)
     print("Test samples:", X_test.shape)
+    print("Train trials:", len(np.unique(train_trials)))
+    print("Test trials:", len(np.unique(test_trials)))
+    print("Trial overlap:", len(set(np.unique(train_trials)) & set(np.unique(test_trials))))
+    print("Train class distribution:", np.bincount(y_train))
+    print("Test class distribution:", np.bincount(y_test))
 
-    print("Train unique trials:", len(np.unique(train_trial_ids)))
-    print("Test unique trials:", len(np.unique(test_trial_ids)))
+    X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2)
+    X_test = torch.tensor(X_test, dtype=torch.float32).permute(0, 3, 1, 2)
 
-    overlap = set(np.unique(train_trial_ids)).intersection(
-        set(np.unique(test_trial_ids))
-    )
-
-    print("Trial overlap between train and test:", len(overlap))
-
-    if len(overlap) != 0:
-        raise ValueError(
-            "Data leakage detected: same trial exists in both train and test!"
-        )
-
-    X_train = torch.tensor(
-        X_train,
-        dtype=torch.float32
-    ).permute(0, 3, 1, 2)
-
-    X_test = torch.tensor(
-        X_test,
-        dtype=torch.float32
-    ).permute(0, 3, 1, 2)
-
-    y_train = torch.tensor(
-        y_train,
-        dtype=torch.long
-    )
-
-    y_test = torch.tensor(
-        y_test,
-        dtype=torch.long
-    )
-
-    class_counts = torch.bincount(y_train)
-
-    class_weights = 1.0 / class_counts.float()
-
-    sample_weights = class_weights[y_train]
-
-    sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True
-    )
+    y_train = torch.tensor(y_train, dtype=torch.long)
+    y_test = torch.tensor(y_test, dtype=torch.long)
 
     train_loader = DataLoader(
-        TensorDataset(
-            X_train,
-            y_train
-        ),
+        TensorDataset(X_train, y_train),
         batch_size=args.batch_size,
-        sampler=sampler
+        shuffle=True
     )
 
     test_loader = DataLoader(
-        TensorDataset(
-            X_test,
-            y_test
-        ),
+        TensorDataset(X_test, y_test),
         batch_size=args.batch_size,
         shuffle=False
     )
 
-    model = STFTHHATNet(
-        n_classes=4
-    ).to(device)
+    model = STFTHHATNet(n_classes=4).to(device)
 
-    criterion = nn.CrossEntropyLoss(
-        label_smoothing=0.05
-    )
+    criterion = nn.CrossEntropyLoss()
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
-        weight_decay=0.005
+        weight_decay=0.001
     )
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -195,31 +124,20 @@ def main():
     )
 
     best_acc = 0.0
-
     best_state = None
 
     for epoch in range(args.epochs):
-
         model.train()
+        total_loss = 0
 
         for X_batch, y_batch in train_loader:
-
             X_batch = X_batch.to(device)
-
             y_batch = y_batch.to(device)
-
-            noise = torch.randn_like(X_batch) * 0.01
-
-            X_batch = X_batch + noise
 
             optimizer.zero_grad()
 
             outputs = model(X_batch)
-
-            loss = criterion(
-                outputs,
-                y_batch
-            )
+            loss = criterion(outputs, y_batch)
 
             loss.backward()
 
@@ -230,137 +148,47 @@ def main():
 
             optimizer.step()
 
+            total_loss += loss.item()
+
         scheduler.step()
 
-        if (epoch + 1) % 10 == 0:
-
-            model.eval()
-
-            preds_all = []
-
-            labels_all = []
-
-            with torch.no_grad():
-
-                for X_batch, y_batch in test_loader:
-
-                    X_batch = X_batch.to(device)
-
-                    outputs = model(X_batch)
-
-                    preds = outputs.argmax(
-                        dim=1
-                    )
-
-                    preds_all.extend(
-                        preds.cpu().numpy()
-                    )
-
-                    labels_all.extend(
-                        y_batch.numpy()
-                    )
-
-            val_acc = accuracy_score(
-                labels_all,
-                preds_all
-            )
+        if (epoch + 1) % 5 == 0:
+            val_acc, _, _ = evaluate(model, test_loader, device)
 
             if val_acc > best_acc:
-
                 best_acc = val_acc
-
                 best_state = {
                     k: v.cpu().clone()
                     for k, v in model.state_dict().items()
                 }
 
             print(
-                f"Epoch {epoch + 1}/{args.epochs} | "
+                f"Epoch {epoch+1}/{args.epochs} | "
+                f"Loss: {total_loss/len(train_loader):.4f} | "
                 f"Val Acc: {val_acc:.4f} | "
                 f"Best: {best_acc:.4f}"
             )
 
     if best_state is not None:
-        model.load_state_dict(
-            best_state
-        )
+        model.load_state_dict(best_state)
 
     model.to(device)
 
-    model.eval()
-
-    all_preds = []
-
-    all_labels = []
-
-    with torch.no_grad():
-
-        for X_batch, y_batch in test_loader:
-
-            X_batch = X_batch.to(device)
-
-            outputs = model(X_batch)
-
-            preds = outputs.argmax(
-                dim=1
-            )
-
-            all_preds.extend(
-                preds.cpu().numpy()
-            )
-
-            all_labels.extend(
-                y_batch.numpy()
-            )
+    final_acc, all_preds, all_labels = evaluate(model, test_loader, device)
 
     results = {
-        "accuracy": accuracy_score(
-            all_labels,
-            all_preds
-        ),
-
-        "kappa": cohen_kappa_score(
-            all_labels,
-            all_preds
-        ),
-
-        "precision": precision_score(
-            all_labels,
-            all_preds,
-            average="macro",
-            zero_division=0
-        ),
-
-        "recall": recall_score(
-            all_labels,
-            all_preds,
-            average="macro",
-            zero_division=0
-        ),
-
-        "f1": f1_score(
-            all_labels,
-            all_preds,
-            average="macro",
-            zero_division=0
-        )
+        "accuracy": final_acc,
+        "kappa": cohen_kappa_score(all_labels, all_preds),
+        "precision": precision_score(all_labels, all_preds, average="macro", zero_division=0),
+        "recall": recall_score(all_labels, all_preds, average="macro", zero_division=0),
+        "f1": f1_score(all_labels, all_preds, average="macro", zero_division=0)
     }
 
-    print("\nLeakage-Free STFT-HHAT Results:")
-
+    print("\nLeakage-Free Fixed STFT-HHAT Results:")
     print(results)
 
-    pd.DataFrame(
-        [results]
-    ).to_csv(
-        args.out,
-        index=False
-    )
-
-    print(
-        "\nSaved to:",
-        args.out
-    )
+    pd.DataFrame([results]).to_csv(args.out, index=False)
+    print("Saved to:", args.out)
 
 
 if __name__ == "__main__":
