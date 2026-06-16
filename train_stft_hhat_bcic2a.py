@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, WeightedRandomSampler
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import accuracy_score, cohen_kappa_score, precision_score, recall_score, f1_score
 
@@ -24,7 +24,6 @@ def set_seed(seed=42):
 
 def evaluate(model, loader, device):
     model.eval()
-
     all_preds = []
     all_labels = []
 
@@ -37,9 +36,7 @@ def evaluate(model, loader, device):
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(y_batch.numpy())
 
-    acc = accuracy_score(all_labels, all_preds)
-
-    return acc, all_preds, all_labels
+    return accuracy_score(all_labels, all_preds), all_preds, all_labels
 
 
 def main():
@@ -47,9 +44,9 @@ def main():
 
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--out", type=str, default="results/stft_hhat_leakage_free_fixed.csv")
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--lr", type=float, default=0.0003)
+    parser.add_argument("--out", type=str, default="results/stft_hhat_mixed_leakage_free.csv")
 
     args = parser.parse_args()
 
@@ -72,10 +69,13 @@ def main():
         random_state=42
     )
 
-    train_idx, test_idx = next(splitter.split(X, y, groups=trial_ids))
+    train_idx, test_idx = next(
+        splitter.split(X, y, groups=trial_ids)
+    )
 
     X_train = X[train_idx]
     X_test = X[test_idx]
+
     y_train = y[train_idx]
     y_test = y[test_idx]
 
@@ -96,26 +96,40 @@ def main():
     y_train = torch.tensor(y_train, dtype=torch.long)
     y_test = torch.tensor(y_test, dtype=torch.long)
 
+    class_counts = torch.bincount(y_train)
+    class_weights = 1.0 / class_counts.float()
+    sample_weights = class_weights[y_train]
+
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
     train_loader = DataLoader(
         TensorDataset(X_train, y_train),
         batch_size=args.batch_size,
-        shuffle=True
+        sampler=sampler,
+        num_workers=2,
+        pin_memory=True
     )
 
     test_loader = DataLoader(
         TensorDataset(X_test, y_test),
         batch_size=args.batch_size,
-        shuffle=False
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True
     )
 
     model = STFTHHATNet(n_classes=4).to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.lr,
-        weight_decay=0.001
+        weight_decay=0.02
     )
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -125,14 +139,20 @@ def main():
 
     best_acc = 0.0
     best_state = None
+    patience = 20
+    patience_counter = 0
 
     for epoch in range(args.epochs):
         model.train()
-        total_loss = 0
+        total_loss = 0.0
 
         for X_batch, y_batch in train_loader:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
+
+            # light augmentation
+            if epoch < 60:
+                X_batch = X_batch + torch.randn_like(X_batch) * 0.005
 
             optimizer.zero_grad()
 
@@ -141,10 +161,7 @@ def main():
 
             loss.backward()
 
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                max_norm=1.0
-            )
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
 
             optimizer.step()
 
@@ -161,18 +178,26 @@ def main():
                     k: v.cpu().clone()
                     for k, v in model.state_dict().items()
                 }
+                patience_counter = 0
+            else:
+                patience_counter += 1
 
             print(
                 f"Epoch {epoch+1}/{args.epochs} | "
-                f"Loss: {total_loss/len(train_loader):.4f} | "
+                f"Loss: {total_loss / len(train_loader):.4f} | "
                 f"Val Acc: {val_acc:.4f} | "
                 f"Best: {best_acc:.4f}"
             )
+
+            if patience_counter >= patience:
+                print("Early stopping triggered")
+                break
 
     if best_state is not None:
         model.load_state_dict(best_state)
 
     model.to(device)
+    model.eval()
 
     final_acc, all_preds, all_labels = evaluate(model, test_loader, device)
 
@@ -184,7 +209,7 @@ def main():
         "f1": f1_score(all_labels, all_preds, average="macro", zero_division=0)
     }
 
-    print("\nLeakage-Free Fixed STFT-HHAT Results:")
+    print("\nMixed Leakage-Free STFT-HHAT Results:")
     print(results)
 
     pd.DataFrame([results]).to_csv(args.out, index=False)
