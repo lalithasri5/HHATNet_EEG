@@ -13,9 +13,7 @@ def common_average_reference(data):
 
 
 def min_max_normalize(channel_data):
-    return (
-        channel_data - np.min(channel_data)
-    ) / (
+    return (channel_data - np.min(channel_data)) / (
         np.max(channel_data) - np.min(channel_data) + 1e-6
     )
 
@@ -23,11 +21,7 @@ def min_max_normalize(channel_data):
 def sliding_window_segments(data, window_size, step):
     return np.array([
         data[:, start:start + window_size]
-        for start in range(
-            0,
-            data.shape[1] - window_size + 1,
-            step
-        )
+        for start in range(0, data.shape[1] - window_size + 1, step)
     ])
 
 
@@ -44,10 +38,7 @@ def stft_spectrogram(segment, fs=250, window_size=64, overlap=50):
 
 
 def extract_band_spectrogram(Sxx, f, band_low, band_high):
-    idx = np.where(
-        (f >= band_low) & (f <= band_high)
-    )[0]
-
+    idx = np.where((f >= band_low) & (f <= band_high))[0]
     return Sxx[idx, :]
 
 
@@ -83,17 +74,9 @@ def preprocess_gdf_folder(
 
     global_trial_id = 0
 
-    trial_window_samples = int(
-        trial_window_sec * fs
-    )
-
-    sliding_window_samples = int(
-        sliding_window_sec * fs
-    )
-
-    sliding_step_samples = int(
-        sliding_step_sec * fs
-    )
+    trial_window_samples = int(trial_window_sec * fs)
+    sliding_window_samples = int(sliding_window_sec * fs)
+    sliding_step_samples = int(sliding_step_sec * fs)
 
     event_code_to_label = {
         769: 0,  # Left hand
@@ -103,30 +86,18 @@ def preprocess_gdf_folder(
     }
 
     for filename in sorted(os.listdir(folder_path)):
-
         if not filename.endswith(".gdf"):
             continue
 
-        # Use only training files: A01T.gdf ... A09T.gdf
         if "E" in filename:
             continue
 
-        filepath = os.path.join(
-            folder_path,
-            filename
-        )
-
-        subject_id = get_true_subject_id(
-            filename
-        )
+        filepath = os.path.join(folder_path, filename)
+        subject_id = get_true_subject_id(filename)
 
         try:
             with mne.utils.use_log_level("ERROR"):
-                raw = mne.io.read_raw_gdf(
-                    filepath,
-                    preload=True
-                )
-
+                raw = mne.io.read_raw_gdf(filepath, preload=True)
         except Exception as e:
             print(f"Failed to load {filename}: {e}")
             continue
@@ -134,14 +105,13 @@ def preprocess_gdf_folder(
         print(f"Processing {filename}")
 
         data = raw.get_data()
-
         channel_names = raw.info["ch_names"]
 
         cleaned_names = [
             ch.lower()
-              .replace("eeg:", "")
-              .replace("eeg-", "")
-              .strip()
+            .replace("eeg:", "")
+            .replace("eeg-", "")
+            .strip()
             for ch in channel_names
         ]
 
@@ -150,21 +120,15 @@ def preprocess_gdf_folder(
                 cleaned_names.index(ch.lower())
                 for ch in selected_channels
             ]
-
         except ValueError as e:
-            print(
-                f"Skipping {filename} due to missing channel: {e}"
-            )
+            print(f"Skipping {filename} due to missing channel: {e}")
             continue
 
         data_sel = data[idx, :]
 
-        data_car = common_average_reference(
-            data_sel
-        )
+        data_car = common_average_reference(data_sel)
 
         with mne.utils.use_log_level("WARNING"):
-
             data_notch = notch_filter(
                 data_car,
                 fs,
@@ -189,26 +153,18 @@ def preprocess_gdf_folder(
 
         annotations = raw.annotations
 
-        event_onsets = (
-            annotations.onset * fs
-        ).astype(int)
-
+        event_onsets = (annotations.onset * fs).astype(int)
         event_descriptions = annotations.description
 
         artifact_times = [
             int((onset + 2) * fs)
-            for onset, desc in zip(
-                annotations.onset,
-                event_descriptions
-            )
+            for onset, desc in zip(annotations.onset, event_descriptions)
             if desc == "1023"
         ]
 
         trials_in_file = 0
 
-        for i, (onset, desc) in enumerate(
-            zip(event_onsets, event_descriptions)
-        ):
+        for i, (onset, desc) in enumerate(zip(event_onsets, event_descriptions)):
             if desc != "768":
                 continue
 
@@ -216,30 +172,20 @@ def preprocess_gdf_folder(
                 continue
 
             try:
-                cue_code = int(
-                    event_descriptions[i + 1].strip()
-                )
-
+                cue_code = int(event_descriptions[i + 1].strip())
             except Exception:
                 continue
 
             if cue_code not in event_code_to_label:
                 continue
 
-            label = event_code_to_label[
-                cue_code
-            ]
+            label = event_code_to_label[cue_code]
 
             start_sample = onset + 2 * fs
-
-            end_sample = (
-                start_sample
-                + trial_window_samples
-            )
+            end_sample = start_sample + trial_window_samples
 
             if any(
-                abs(start_sample - artifact_time)
-                < trial_window_samples
+                abs(start_sample - artifact_time) < trial_window_samples
                 for artifact_time in artifact_times
             ):
                 continue
@@ -250,10 +196,7 @@ def preprocess_gdf_folder(
             current_trial_id = global_trial_id
             global_trial_id += 1
 
-            trial = data_norm[
-                :,
-                start_sample:end_sample
-            ]
+            trial = data_norm[:, start_sample:end_sample]
 
             segments = sliding_window_segments(
                 trial,
@@ -262,12 +205,9 @@ def preprocess_gdf_folder(
             )
 
             for segment in segments:
-
                 channel_imgs = []
 
-                for ch in range(
-                    len(selected_channels)
-                ):
+                for ch in range(len(selected_channels)):
                     sig = segment[ch, :]
 
                     f, t, Sxx = stft_spectrogram(
@@ -277,40 +217,20 @@ def preprocess_gdf_folder(
                         overlap=stft_overlap
                     )
 
-                    mu_spec = extract_band_spectrogram(
-                        Sxx,
-                        f,
-                        8,
-                        14
-                    )
+                    mu_spec = extract_band_spectrogram(Sxx, f, 8, 14)
+                    mu_resized = resize_spectrogram(mu_spec)
 
-                    mu_resized = resize_spectrogram(
-                        mu_spec
-                    )
-
-                    beta_spec = extract_band_spectrogram(
-                        Sxx,
-                        f,
-                        16,
-                        30
-                    )
-
-                    beta_resized = resize_spectrogram(
-                        beta_spec
-                    )
+                    beta_spec = extract_band_spectrogram(Sxx, f, 16, 30)
+                    beta_resized = resize_spectrogram(beta_spec)
 
                     combined_spec = np.vstack([
                         mu_resized,
                         beta_resized
                     ])
 
-                    channel_imgs.append(
-                        combined_spec
-                    )
+                    channel_imgs.append(combined_spec)
 
-                img = np.vstack(
-                    channel_imgs
-                )
+                img = np.vstack(channel_imgs)
 
                 img = np.repeat(
                     img[:, :, np.newaxis],
@@ -319,57 +239,24 @@ def preprocess_gdf_folder(
                 )
 
                 if add_gaussian_noise:
-                    noise = np.random.normal(
-                        0,
-                        0.01,
-                        img.shape
-                    )
-
+                    noise = np.random.normal(0, 0.01, img.shape)
                     img = img + noise
 
-                img = (
-                    img - np.mean(img)
-                ) / (
-                    np.std(img) + 1e-6
-                )
+                img = (img - np.mean(img)) / (np.std(img) + 1e-6)
 
                 X.append(img)
-
                 y.append(label)
-
-                subject_ids.append(
-                    subject_id
-                )
-
-                trial_ids.append(
-                    current_trial_id
-                )
+                subject_ids.append(subject_id)
+                trial_ids.append(current_trial_id)
 
                 trials_in_file += 1
 
-        print(
-            f"Extracted {trials_in_file} samples from {filename}"
-        )
+        print(f"Extracted {trials_in_file} samples from {filename}")
 
-    X = np.array(
-        X,
-        dtype=np.float32
-    )
-
-    y = np.array(
-        y,
-        dtype=np.int64
-    )
-
-    subject_ids = np.array(
-        subject_ids,
-        dtype=np.int64
-    )
-
-    trial_ids = np.array(
-        trial_ids,
-        dtype=np.int64
-    )
+    X = np.array(X, dtype=np.float32)
+    y = np.array(y, dtype=np.int64)
+    subject_ids = np.array(subject_ids, dtype=np.int64)
+    trial_ids = np.array(trial_ids, dtype=np.int64)
 
     if len(X) > 0:
         X, y, subject_ids, trial_ids = shuffle(
