@@ -104,9 +104,14 @@ def main():
     print("Validation:", X_val.shape)
     print("Test:", X_test.shape)
 
-    X_train = torch.tensor(X_train, dtype=torch.float32).permute(0, 3, 1, 2)
-    X_val = torch.tensor(X_val, dtype=torch.float32).permute(0,3,1,2)
-    X_test = torch.tensor(X_test, dtype=torch.float32).permute(0, 3, 1, 2)
+    X_train = torch.tensor(X_train, dtype=torch.float32).squeeze(1)
+    X_val = torch.tensor(X_val, dtype=torch.float32).squeeze(1)
+    X_test = torch.tensor(X_test, dtype=torch.float32).squeeze(1)
+
+
+    print("Train tensor shape:", X_train.shape)
+    print("Validation tensor shape:", X_val.shape)
+    print("Test tensor shape:", X_test.shape)
 
     y_train = torch.tensor(y_train, dtype=torch.long)
     y_val = torch.tensor(y_val, dtype=torch.long)
