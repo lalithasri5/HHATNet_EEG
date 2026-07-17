@@ -1,129 +1,221 @@
 import os
 import numpy as np
 import mne
-import torch
-
-from torch.utils.data import TensorDataset, DataLoader
-from sklearn.model_selection import train_test_split
 
 
-BANDS = {
-    "theta": (4, 8),
-    "mu": (8, 13),
-    "low_beta": (13, 20),
-    "high_beta": (20, 30),
-    "gamma": (30, 40)
+# -------------------------------------------------
+# Motor Imagery Classes
+# -------------------------------------------------
+
+EVENTS = {
+    "769": 0,   # Left Hand
+    "770": 1,   # Right Hand
+    "771": 2,   # Feet
+    "772": 3    # Tongue
 }
 
 
-def extract_band_epochs(raw, events, event_id, tmin=0.5, tmax=4.5):
-    band_epochs = []
+# -------------------------------------------------
+# EEG Channels
+# -------------------------------------------------
 
-    for _, (low, high) in BANDS.items():
-        raw_band = raw.copy()
-
-        raw_band.filter(
-            l_freq=low,
-            h_freq=high,
-            fir_design="firwin",
-            verbose=False
-        )
-
-        epochs = mne.Epochs(
-            raw_band,
-            events,
-            event_id=event_id,
-            tmin=tmin,
-            tmax=tmax,
-            baseline=None,
-            preload=True,
-            verbose=False
-        )
-
-        band_epochs.append(epochs.get_data())
-
-    X = np.stack(band_epochs, axis=1)
-    y = epochs.events[:, -1]
-
-    return X, y
+SELECTED_CHANNELS = [
+    "C3",
+    "Cz",
+    "C4"
+]
 
 
-def load_subject_2a(data_path, subject, test_size=0.2, batch_size=32):
-    file_path = os.path.join(data_path, f"A{subject:02d}T.gdf")
+# -------------------------------------------------
+# Sliding Window Function
+# -------------------------------------------------
 
-    raw = mne.io.read_raw_gdf(file_path, preload=True, verbose=False)
+def sliding_window(data, labels, window_size=250, step_size=125):
+    """
+    Parameters
+    ----------
+    data : ndarray
+        Shape -> (Trials, Channels, Samples)
 
-    raw = raw.drop_channels([
-        "EOG-left",
-        "EOG-central",
-        "EOG-right"
-    ])
+    labels : ndarray
+        Shape -> (Trials,)
 
-    # improved preprocessing
-    raw.set_eeg_reference("average", verbose=False)
+    window_size : int
+        Samples in each window
+
+    step_size : int
+        Overlap step
+
+    Returns
+    -------
+    windowed_data
+        Shape -> (NewTrials, Channels, window_size)
+
+    windowed_labels
+    """
+
+    windows = []
+    window_labels = []
+
+    for trial, label in zip(data, labels):
+
+        total_samples = trial.shape[-1]
+
+        start = 0
+
+        while start + window_size <= total_samples:
+
+            windows.append(
+                trial[:, start:start + window_size]
+            )
+
+            window_labels.append(label)
+
+            start += step_size
+
+    return np.asarray(windows), np.asarray(window_labels)
+
+
+# -------------------------------------------------
+# Load BCIC IV-2a Subject
+# -------------------------------------------------
+
+def load_subject(
+        data_path,
+        subject=1,
+        train=True,
+        tmin=0.5,
+        tmax=4.5,
+        use_sliding_window=True,
+        window_size=250,
+        step_size=125):
+
+    if train:
+        filename = f"A{subject:02d}T.gdf"
+    else:
+        filename = f"A{subject:02d}E.gdf"
+
+    filepath = os.path.join(data_path, filename)
+
+    print(f"Loading {filepath}")
+
+    raw = mne.io.read_raw_gdf(
+        filepath,
+        preload=True,
+        verbose=False
+    )
+
+    # -----------------------------------------
+    # Remove EOG
+    # -----------------------------------------
+
+    eog_channels = [
+        ch for ch in raw.ch_names
+        if "EOG" in ch.upper()
+    ]
+
+    if len(eog_channels):
+        raw.drop_channels(eog_channels)
+
+    # -----------------------------------------
+    # Select C3 Cz C4
+    # -----------------------------------------
+
+    raw.pick_channels(SELECTED_CHANNELS)
+
+    # -----------------------------------------
+    # CAR
+    # -----------------------------------------
+
+    raw.set_eeg_reference(
+        ref_channels="average",
+        verbose=False
+    )
+
+    # -----------------------------------------
+    # 50 Hz Notch
+    # -----------------------------------------
 
     raw.notch_filter(
         freqs=50,
         verbose=False
     )
 
-    events, event_dict = mne.events_from_annotations(raw, verbose=False)
+    # -----------------------------------------
+    # 8-30 Hz Bandpass
+    # -----------------------------------------
 
-    event_id = {
-        "left_hand": event_dict["769"],
-        "right_hand": event_dict["770"],
-        "feet": event_dict["771"],
-        "tongue": event_dict["772"]
-    }
+    raw.filter(
+        l_freq=8,
+        h_freq=30,
+        fir_design="firwin",
+        verbose=False
+    )
 
-    X, y = extract_band_epochs(
+    # -----------------------------------------
+    # Events
+    # -----------------------------------------
+
+    events, event_dict = mne.events_from_annotations(
+        raw,
+        verbose=False
+    )
+
+    event_id = {}
+
+    for key in EVENTS:
+
+        if key in event_dict:
+
+            event_id[key] = event_dict[key]
+
+    epochs = mne.Epochs(
         raw,
         events,
-        event_id,
-        tmin=0.5,
-        tmax=4.5
+        event_id=event_id,
+        tmin=tmin,
+        tmax=tmax,
+        baseline=None,
+        preload=True,
+        verbose=False
     )
 
-    label_map = {
-        event_dict["769"]: 0,
-        event_dict["770"]: 1,
-        event_dict["771"]: 2,
-        event_dict["772"]: 3
-    }
+    X = epochs.get_data()
 
-    y = np.array([label_map[label] for label in y])
+    labels = epochs.events[:, -1]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=test_size,
-        random_state=42,
-        stratify=y
+    label_map = {}
+
+    for key in EVENTS:
+
+        if key in event_dict:
+
+            label_map[event_dict[key]] = EVENTS[key]
+
+    y = np.array(
+        [label_map[label] for label in labels],
+        dtype=np.int64
     )
 
-    # normalize using train data only
-    mean = X_train.mean(axis=(0, 3), keepdims=True)
-    std = X_train.std(axis=(0, 3), keepdims=True) + 1e-6
+    # -----------------------------------------
+    # Sliding Window
+    # -----------------------------------------
 
-    X_train = (X_train - mean) / std
-    X_test = (X_test - mean) / std
+    if use_sliding_window:
 
-    X_train = torch.tensor(X_train, dtype=torch.float32)
-    X_test = torch.tensor(X_test, dtype=torch.float32)
+        X, y = sliding_window(
+            X,
+            y,
+            window_size=window_size,
+            step_size=step_size
+        )
 
-    y_train = torch.tensor(y_train, dtype=torch.long)
-    y_test = torch.tensor(y_test, dtype=torch.long)
+    print()
 
-    train_loader = DataLoader(
-        TensorDataset(X_train, y_train),
-        batch_size=batch_size,
-        shuffle=True
-    )
+    print("Subject :", subject)
+    print("EEG Shape :", X.shape)
+    print("Labels :", y.shape)
 
-    test_loader = DataLoader(
-        TensorDataset(X_test, y_test),
-        batch_size=batch_size,
-        shuffle=False
-    )
+    print()
 
-    return train_loader, test_loader
+    return X, y
