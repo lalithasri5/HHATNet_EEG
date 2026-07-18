@@ -4,22 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class SEBlock(nn.Module):
-    def __init__(self, channels, reduction=16):
-        super().__init__()
-
-        self.fc = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(channels, channels // reduction, 1),
-            nn.SiLU(),
-            nn.Conv2d(channels // reduction, channels, 1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        return x * self.fc(x)
-
-
 class EnhancedCNNBackbone(nn.Module):
     def __init__(self):
         super().__init__()
@@ -50,7 +34,6 @@ class EnhancedCNNBackbone(nn.Module):
             nn.SiLU()
         )
 
-        self.se = SEBlock(256)
 
         self.reduce = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 32)),
@@ -63,7 +46,6 @@ class EnhancedCNNBackbone(nn.Module):
         x = self.conv3(x)
         x = self.conv4(x)
 
-        x = self.se(x)
 
         x = self.reduce(x)       # B, 256, 1, 32
         x = x.squeeze(2)         # B, 256, 32
@@ -238,29 +220,6 @@ class FeatureFusion(nn.Module):
         return fused
 
 
-class CompactTCN(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-
-        self.block = nn.Sequential(
-            nn.Conv1d(dim, dim, kernel_size=3, padding=1, dilation=1),
-            nn.BatchNorm1d(dim),
-            nn.ELU(),
-
-            nn.Conv1d(dim, dim, kernel_size=3, padding=2, dilation=2),
-            nn.BatchNorm1d(dim),
-            nn.ELU(),
-
-            nn.Conv1d(dim, dim, kernel_size=3, padding=4, dilation=4),
-            nn.BatchNorm1d(dim),
-            nn.ELU()
-        )
-
-    def forward(self, x):
-        y = self.block(x.transpose(1, 2)).transpose(1, 2)
-        return x + y
-
-
 class STFTHHATNet(nn.Module):
     def __init__(self, n_classes=4, dim=128):
         super().__init__()
@@ -275,7 +234,6 @@ class STFTHHATNet(nn.Module):
         self.gqa_branch = GQABranch(dim)
 
         self.fusion = FeatureFusion(dim)
-        self.tcn = CompactTCN(dim)
 
         self.embedding = nn.Sequential(
             nn.LayerNorm(dim),
@@ -296,7 +254,6 @@ class STFTHHATNet(nn.Module):
         gqa_out = self.gqa_branch(x)
 
         x = self.fusion(tmsa_out, gqa_out)
-        x = self.tcn(x)
 
         x = x.mean(dim=1)
 
